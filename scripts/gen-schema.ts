@@ -30,12 +30,12 @@ interface Schema {
   dashboards?: Record<string, unknown>;
 }
 
-function generateZodType(prop: PropertyDef): string {
+function generateZodType(prop: PropertyDef, propName: string): string {
   let zodType: string;
 
   switch (prop.type) {
     case 'string':
-      zodType = 'z.string()';
+      zodType = 'z.string().min(1).max(2048)';
       break;
     case 'number':
       zodType = 'z.number()';
@@ -45,7 +45,7 @@ function generateZodType(prop: PropertyDef): string {
       break;
     case 'enum':
       if (!prop.enum) throw new Error('Enum type must have enum values');
-      const enumValues = prop.enum.map(v => `"${v}"`).join(', ');
+      const enumValues = prop.enum.map(v => JSON.stringify(v)).join(', ');
       zodType = `z.enum([${enumValues}])`;
       break;
     case 'uuid':
@@ -58,26 +58,12 @@ function generateZodType(prop: PropertyDef): string {
       zodType = 'z.string().url()';
       break;
     default:
-      zodType = 'z.any()';
+      throw new Error('Unsupported schema property type: ' + prop.type);
   }
 
-  // Add validation based on property name patterns
-  if (prop.type === 'string') {
-    if (prop.description?.toLowerCase().includes('email')) {
-      zodType = 'z.string().email()';
-    } else if (prop.description?.toLowerCase().includes('url')) {
-      zodType = 'z.string().url()';
-    }
-  }
-
-  // Add guards for numbers
-  if (prop.type === 'number') {
-    // Common business logic guards
-    if (prop.description?.toLowerCase().includes('amount') ||
-        prop.description?.toLowerCase().includes('price')) {
-      zodType += '.positive()';
-    }
-  }
+  if (propName === 'email') zodType = 'z.string().email().max(254)';
+  if (propName === 'amount') zodType = 'z.number().int().positive().max(Number.MAX_SAFE_INTEGER)';
+  if (propName === 'currency') zodType = 'z.string().regex(/^[A-Z]{3}$/)';
 
   // Handle optional fields
   if (!prop.required) {
@@ -95,12 +81,12 @@ function generateZodType(prop: PropertyDef): string {
 function generateEventSchema(eventName: string, eventDef: EventDef): string {
   const properties = Object.entries(eventDef.properties)
     .map(([propName, propDef]) => {
-      const zodType = generateZodType(propDef);
-      return `    ${propName}: ${zodType}`;
+      const zodType = generateZodType(propDef, propName);
+      return `    ${JSON.stringify(propName)}: ${zodType}`;
     })
     .join(',\n');
 
-  return `  ${eventName}: z.object({\n${properties}\n  })`;
+  return `  ${JSON.stringify(eventName)}: z.object({\n${properties}\n  }).strict()`;
 }
 
 function generateTypeHelpers(schema: Schema): string {
@@ -132,7 +118,7 @@ function generateTypeHelpers(schema: Schema): string {
               tsType = propDef.enum.map(v => `'${v}'`).join(' | ');
               break;
             default:
-              tsType = 'any';
+              throw new Error('Unsupported schema property type');
           }
 
           const optional = propDef.required ? '' : '?';
@@ -163,7 +149,6 @@ export function trackEvent<T extends EventName>(
   const result = schema.safeParse(properties);
 
   if (!result.success) {
-    console.error('Event validation failed for ' + event + ':', result.error);
     return Promise.resolve({
       success: false,
       error: result.error.message
@@ -172,7 +157,7 @@ export function trackEvent<T extends EventName>(
 
   // Import at runtime to avoid circular dependencies
   return import('../lib/analytics').then(({ track }) =>
-    track(event, properties)
+    track(event, result.data)
   );
 }
 `;
@@ -202,7 +187,6 @@ ${typeHelpers}
 export const schemaMetadata = ${JSON.stringify({
   version: schema.version,
   project: schema.project,
-  generatedAt: new Date().toISOString(),
 }, null, 2)};
 
 // Validation helper
@@ -230,6 +214,13 @@ function main() {
 
     const yamlContent = readFileSync(schemaPath, 'utf8');
     const schema = load(yamlContent) as Schema;
+    if (!schema?.events || Object.keys(schema.events).length > 100) throw new Error('Schema requires at most 100 events');
+    for (const [name, event] of Object.entries(schema.events)) {
+      if (!/^[a-z][a-z0-9_]{0,79}$/.test(name) || name === '__proto__') throw new Error('Invalid event name');
+      for (const property of Object.keys(event.properties)) {
+        if (!/^[a-zA-Z][a-zA-Z0-9_]{0,79}$/.test(property) || property === '__proto__') throw new Error('Invalid property name');
+      }
+    }
 
     const generatedCode = generateSchemaFile(schema);
     writeFileSync(outputPath, generatedCode);

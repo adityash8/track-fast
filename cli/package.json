@@ -1,0 +1,3 @@
+{
+  "name": "trackfast-doctor", "version": "0.1.0", "type": "module", "description": "Observe analytics requests and provider responses on authorized sites", "bin": { "trackfast": "bin.mjs" }, "files": ["*.mjs", "gen.cjs", "README.md"], "engines": { "node": ">=20" }, "dependencies": { "puppeteer": "^24.22.0", "zod": "^4.1.9", "js-yaml": "^4.1.0" }
+}

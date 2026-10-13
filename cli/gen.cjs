@@ -1,0 +1,207 @@
+#!/usr/bin/env tsx
+"use strict";
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+
+// scripts/gen-schema.ts
+var import_fs = require("fs");
+var import_js_yaml = require("js-yaml");
+var import_path = __toESM(require("path"));
+function generateZodType(prop, propName) {
+  let zodType;
+  switch (prop.type) {
+    case "string":
+      zodType = "z.string().min(1).max(2048)";
+      break;
+    case "number":
+      zodType = "z.number()";
+      break;
+    case "boolean":
+      zodType = "z.boolean()";
+      break;
+    case "enum":
+      if (!prop.enum) throw new Error("Enum type must have enum values");
+      const enumValues = prop.enum.map((v) => JSON.stringify(v)).join(", ");
+      zodType = `z.enum([${enumValues}])`;
+      break;
+    case "uuid":
+      zodType = "z.string().uuid()";
+      break;
+    case "email":
+      zodType = "z.string().email()";
+      break;
+    case "url":
+      zodType = "z.string().url()";
+      break;
+    default:
+      throw new Error("Unsupported schema property type: " + prop.type);
+  }
+  if (propName === "email") zodType = "z.string().email().max(254)";
+  if (propName === "amount") zodType = "z.number().int().positive().max(Number.MAX_SAFE_INTEGER)";
+  if (propName === "currency") zodType = "z.string().regex(/^[A-Z]{3}$/)";
+  if (!prop.required) {
+    zodType += ".optional()";
+  }
+  if (prop.default !== void 0) {
+    zodType += `.default(${JSON.stringify(prop.default)})`;
+  }
+  return zodType;
+}
+function generateEventSchema(eventName, eventDef) {
+  const properties = Object.entries(eventDef.properties).map(([propName, propDef]) => {
+    const zodType = generateZodType(propDef, propName);
+    return `    ${JSON.stringify(propName)}: ${zodType}`;
+  }).join(",\n");
+  return `  ${JSON.stringify(eventName)}: z.object({
+${properties}
+  }).strict()`;
+}
+function generateTypeHelpers(schema) {
+  const eventTypes = Object.keys(schema.events).map((eventName) => `  | '${eventName}'`).join("\n");
+  const eventPropsTypes = Object.entries(schema.events).map(([eventName, eventDef]) => {
+    const propsType = Object.entries(eventDef.properties).map(([propName, propDef]) => {
+      let tsType;
+      switch (propDef.type) {
+        case "string":
+        case "email":
+        case "url":
+        case "uuid":
+          tsType = "string";
+          break;
+        case "number":
+          tsType = "number";
+          break;
+        case "boolean":
+          tsType = "boolean";
+          break;
+        case "enum":
+          if (!propDef.enum) throw new Error("Enum must have values");
+          tsType = propDef.enum.map((v) => `'${v}'`).join(" | ");
+          break;
+        default:
+          throw new Error("Unsupported schema property type");
+      }
+      const optional = propDef.required ? "" : "?";
+      return `    ${propName}${optional}: ${tsType};`;
+    }).join("\n");
+    return `  '${eventName}': {
+${propsType}
+  };`;
+  }).join("\n");
+  return `
+// Generated event types
+export type EventName =
+${eventTypes};
+
+export type EventProperties = {
+${eventPropsTypes}
+};
+
+// Type-safe tracking function
+export function trackEvent<T extends EventName>(
+  event: T,
+  properties: EventProperties[T]
+): Promise<{ success: boolean; method?: string; error?: string }> {
+  // Validate at runtime using Zod schemas
+  const schema = eventSchemas[event];
+  const result = schema.safeParse(properties);
+
+  if (!result.success) {
+    return Promise.resolve({
+      success: false,
+      error: result.error.message
+    });
+  }
+
+  // Import at runtime to avoid circular dependencies
+  return import('../lib/analytics').then(({ track }) =>
+    track(event, result.data)
+  );
+}
+`;
+}
+function generateSchemaFile(schema) {
+  const eventSchemas = Object.entries(schema.events).map(([eventName, eventDef]) => generateEventSchema(eventName, eventDef)).join(",\n\n");
+  const typeHelpers = generateTypeHelpers(schema);
+  return `// Generated by scripts/gen-schema.ts - DO NOT EDIT MANUALLY
+import { z } from 'zod';
+
+// Event validation schemas
+export const eventSchemas = {
+${eventSchemas}
+} as const;
+
+// Re-export for convenience
+export { z };
+
+${typeHelpers}
+
+// Schema metadata
+export const schemaMetadata = ${JSON.stringify({
+    version: schema.version,
+    project: schema.project
+  }, null, 2)};
+
+// Validation helper
+export function validateEvent(eventName: string, properties: unknown) {
+  const schema = eventSchemas[eventName as keyof typeof eventSchemas];
+  if (!schema) {
+    throw new Error('Unknown event: ' + eventName);
+  }
+
+  return schema.parse(properties);
+}
+
+// List all available events
+export const availableEvents = Object.keys(eventSchemas) as EventName[];
+`;
+}
+function main() {
+  try {
+    const schemaPath = import_path.default.join(process.cwd(), "insight.yml");
+    const outputPath = import_path.default.join(process.cwd(), "src/lib/event-schemas.ts");
+    console.log("\u{1F527} Generating event schemas from insight.yml...");
+    const yamlContent = (0, import_fs.readFileSync)(schemaPath, "utf8");
+    const schema = (0, import_js_yaml.load)(yamlContent);
+    if (!schema?.events || Object.keys(schema.events).length > 100) throw new Error("Schema requires at most 100 events");
+    for (const [name, event] of Object.entries(schema.events)) {
+      if (!/^[a-z][a-z0-9_]{0,79}$/.test(name) || name === "__proto__") throw new Error("Invalid event name");
+      for (const property of Object.keys(event.properties)) {
+        if (!/^[a-zA-Z][a-zA-Z0-9_]{0,79}$/.test(property) || property === "__proto__") throw new Error("Invalid property name");
+      }
+    }
+    const generatedCode = generateSchemaFile(schema);
+    (0, import_fs.writeFileSync)(outputPath, generatedCode);
+    console.log("\u2705 Generated src/lib/event-schemas.ts");
+    console.log(`\u{1F4CA} Found ${Object.keys(schema.events).length} events:`);
+    Object.keys(schema.events).forEach((event) => {
+      console.log(`   \u2022 ${event}`);
+    });
+  } catch (error) {
+    console.error("\u274C Schema generation failed:", error);
+    process.exit(1);
+  }
+}
+if (require.main === module) {
+  main();
+}
