@@ -4,17 +4,21 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
-    "build": "npm run gen:schema && next build --turbopack",
+    "build": "npm run gen:schema && npm run pack:cli && next build",
     "start": "next start",
     "lint": "eslint",
     "gen:schema": "tsx scripts/gen-schema.ts",
-    "doctor": "tsx scripts/doctor.ts"
+    "doctor": "node cli/bin.mjs doctor",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "pack:cli": "node scripts/pack-cli.mjs",
+    "test:browser": "node tests/browser.mjs"
   },
   "dependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/uuid": "^10.0.0",
     "js-yaml": "^4.1.0",
-    "next": "15.5.3",
+    "next": "15.5.27",
     "posthog-js": "^1.266.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
@@ -30,7 +34,7 @@
     "chalk": "^5.6.2",
     "cli-table3": "^0.6.5",
     "eslint": "^9",
-    "eslint-config-next": "15.5.3",
+    "eslint-config-next": "15.5.27",
     "puppeteer": "^24.22.0",
     "tailwindcss": "^4",
     "tsx": "^4.20.5",

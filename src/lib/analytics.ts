@@ -1,81 +1,54 @@
 import posthog from 'posthog-js';
 
-// Initialize PostHog on client-side only
-if (typeof window !== 'undefined' && process.env.NEXT_PUBLIC_POSTHOG_KEY) {
-  posthog.init(process.env.NEXT_PUBLIC_POSTHOG_KEY, {
-    api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com',
-    person_profiles: 'identified_only',
-    loaded: (ph) => {
-      if (process.env.NODE_ENV === 'development') console.log('PostHog loaded', ph);
-    },
-  });
-}
-
-// Analytics interface for server-side and client-side tracking
-export interface TrackingEvent {
-  event: string;
-  properties?: Record<string, unknown>;
-  timestamp?: Date;
-  userId?: string;
-  sessionId?: string;
-}
-
-// Core tracking function with fallback to server-side proxy
+// SDK initialization is explicit: importing helpers never emits events.
+let initialized = false;
 export const track = async (event: string, properties?: Record<string, unknown>) => {
-  const payload: TrackingEvent = {
-    event,
-    properties: {
-      ...properties,
-      $lib_version: '0.1.0',
-      timestamp: new Date().toISOString(),
-    },
-  };
-
-  // Client-side tracking via PostHog
-  if (typeof window !== 'undefined' && posthog) {
-    posthog.capture(event, payload.properties);
-    return { success: true, method: 'client' };
-  }
-
-  // Server-side fallback via API route (bypasses ad-blockers)
-  try {
-    const response = await fetch('/api/track', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Tracking failed: ${response.statusText}`);
+  const { validateEvent } = await import('./event-schemas');
+  let clean;
+  try { clean = validateEvent(event, properties || {}); }
+  catch { return { success: false, error: 'Invalid event properties. Check insight.yml.' }; }
+  if (typeof window !== 'undefined' && process.env.NEXT_PUBLIC_POSTHOG_KEY) {
+    if (!initialized) {
+      posthog.init(process.env.NEXT_PUBLIC_POSTHOG_KEY, {
+        api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com',
+        person_profiles: 'identified_only', autocapture: false, capture_pageview: false, capture_pageleave: false,
+        persistence: 'memory',
+      });
+      initialized = true;
     }
-
-    return { success: true, method: 'server' };
-  } catch (error) {
-    console.error('Analytics tracking failed:', error);
-    return { success: false, error: error instanceof Error ? error.message : String(error) };
+    if ('email' in clean) return { success: false, error: 'Send events containing email through your server gateway, which hashes email.' };
+    posthog.capture(event, clean);
+    return { success: true, method: 'client-queued' }; // Queueing is not proof of provider acceptance.
   }
+  if (typeof window !== 'undefined') return { success: false, error: 'Client analytics is not configured. Use the authorized server gateway.' };
+  const origin = process.env.TRACKFAST_TEMPLATE_ORIGIN;
+  const token = process.env.TRACKFAST_OPERATOR_TOKEN;
+  if (!origin || !token) return { success: false, error: 'Configure server TRACKFAST_TEMPLATE_ORIGIN and TRACKFAST_OPERATOR_TOKEN.' };
+  try {
+    const response = await fetch(new URL('/api/track', origin), {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ event, properties: clean }), signal: AbortSignal.timeout(10000), redirect: 'error',
+    });
+    return response.ok ? { success: true, method: 'server-accepted' } : { success: false, error: `Gateway returned HTTP ${response.status}.` };
+  } catch { return { success: false, error: 'Gateway request failed.' }; }
 };
 
 // Convenient pageview helper
 export const pageview = (path?: string) => {
   const url = path || (typeof window !== 'undefined' ? window.location.pathname : '/');
-  return track('pageview', { path: url, referrer: document?.referrer });
+  return track('pageview', { path: url, referrer: typeof document !== 'undefined' ? document.referrer || undefined : undefined });
 };
 
-// User identification
+// Identification is a client SDK operation, never a claim of authenticated ownership.
 export const identify = (userId: string, traits?: Record<string, unknown>) => {
-  if (typeof window !== 'undefined' && posthog) {
-    posthog.identify(userId, traits);
-  }
-  return track('user_identified', { userId, ...traits });
+  if (typeof window === 'undefined' || !initialized) return { success: false, error: 'Initialize client capture explicitly before identification.' };
+  posthog.identify(userId, traits);
+  return { success: true, method: 'identity-queued' };
 };
-
-// Reset user (for logout)
 export const reset = () => {
-  if (typeof window !== 'undefined' && posthog) {
-    posthog.reset();
-  }
-  return track('user_reset');
+  if (typeof window === 'undefined' || !initialized) return { success: false, error: 'Client capture is not initialized.' };
+  posthog.reset();
+  return { success: true, method: 'client-reset' };
 };
 
 // Type-safe event helpers using generated schemas
@@ -118,17 +91,6 @@ export const analytics = {
   pageview,
   identify,
   reset,
-};
-
-// Development helpers
-export const debugAnalytics = () => {
-  if (process.env.NODE_ENV === 'development') {
-    console.log('PostHog initialized:', !!posthog);
-    console.log('Environment keys:', {
-      posthog: !!process.env.NEXT_PUBLIC_POSTHOG_KEY,
-      ga4: !!process.env.NEXT_PUBLIC_GA4_ID,
-    });
-  }
 };
 
 export default analytics;
