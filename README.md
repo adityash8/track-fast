@@ -2,6 +2,8 @@
 
 Analytics doctor for authorized sites. Observe GA4, PostHog and Mixpanel requests, distinguish accepted provider responses from unknown downstream receipt, and export a bounded JSON report. The web app inspects HTML/scripts or imports a real CLI/HAR capture; it never manufactures provider health.
 
+Static inspection pins each validated public DNS address through the HTTP lookup callback, including Node's address-array request mode. Redirect destinations are validated separately.
+
 ```sh
 npm install
 npm run dev

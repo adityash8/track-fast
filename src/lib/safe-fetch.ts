@@ -28,7 +28,9 @@ export async function safeFetch(raw: string, deadline = Date.now() + 15000, redi
     const request = (url.protocol === 'https:' ? https : http).request(url, {
       method: 'GET', headers: { 'User-Agent': 'TrackfastDoctor/0.1 (static inspection)', Accept: 'text/html, application/javascript, text/javascript, text/plain' },
       // Pin the validated address while preserving TLS hostname verification and Host header.
-      lookup: (_host, _opts, callback) => callback(null, address, family), agent: false,
+      lookup: (_host, opts, callback) => opts.all
+        ? callback(null, [{ address, family }])
+        : callback(null, address, family), agent: false,
     }, response => {
       const status = response.statusCode || 0;
       const contentType = String(response.headers['content-type'] || '');
